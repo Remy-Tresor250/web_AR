@@ -1,219 +1,130 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
+import { ARButton } from "three/examples/jsm/webxr/ARButton";
 
-// Types
-interface ARViewerProps {
-  modelPath?: string;
-  objectColor?: string;
-  objectSize?: number;
-}
-
-// Use the built-in XRSystem type
-declare global {
-  interface Navigator {
-    xr?: XRSystem;
-  }
-}
-
-const ARViewer: React.FC<ARViewerProps> = ({
-  objectColor = "#00ff00",
-  objectSize = 0.1,
-}) => {
+const ARShoeApp: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const sceneRef = useRef<THREE.Scene | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const objectRef = useRef<THREE.Mesh | null>(null);
-  const controllerRef = useRef<THREE.Group | null>(null);
+  const [isARSupported, setIsARSupported] = useState(false);
 
-  const [isARSupported, setIsARSupported] = useState(true);
-  const [isARSessionActive, setIsARSessionActive] = useState(false);
-  const [isObjectPlaced, setIsObjectPlaced] = useState(false);
-
-  // Initialize Three.js scene
-  const initializeScene = useCallback(() => {
+  useEffect(() => {
     if (!containerRef.current) return;
+
+    // Check for WebXR AR support
+    const checkARSupport = async () => {
+      if ("xr" in navigator) {
+        try {
+          const supported = await navigator.xr?.isSessionSupported(
+            "immersive-ar"
+          );
+          setIsARSupported(!!supported);
+        } catch (error) {
+          console.error("AR support check failed", error);
+        }
+      }
+    };
+    checkARSupport();
 
     // Scene setup
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(
-      70,
+      75,
       window.innerWidth / window.innerHeight,
-      0.01,
-      20
+      0.1,
+      1000
     );
 
     const renderer = new THREE.WebGLRenderer({
-      antialias: true,
       alpha: true,
+      antialias: true,
     });
-
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    containerRef.current.appendChild(renderer.domElement);
+    renderer.xr.enabled = true;
 
-    // Create default object (cube) or load 3D model
-    const geometry = new THREE.BoxGeometry(objectSize, objectSize, objectSize);
-    const material = new THREE.MeshPhongMaterial({
-      color: objectColor,
-      specular: 0x444444,
-      shininess: 30,
+    // Add AR button
+    const arButton = ARButton.createButton(renderer, {
+      requiredFeatures: ["hit-test"],
     });
-    const object = new THREE.Mesh(geometry, material);
+    containerRef.current.appendChild(arButton);
 
     // Lighting
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-    directionalLight.position.set(1, 1, 1);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(0, 10, 0);
     scene.add(directionalLight);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
-    // Store refs
-    sceneRef.current = scene;
-    cameraRef.current = camera;
-    rendererRef.current = renderer;
-    objectRef.current = object;
+    // Load 3D Shoe Model
+    const loader = new GLTFLoader();
+    loader.load(
+      "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/Duck/glTF/Duck.gltf", // Replace with your shoe model
+      (gltf: { scene: any }) => {
+        const model = gltf.scene;
+        model.scale.set(0.5, 0.5, 0.5);
 
+        // Add interaction for placing and moving the model
+        renderer.xr.addEventListener("sessionstart", () => {
+          const session = renderer.xr.getSession();
+
+          if (session) {
+            session.addEventListener(
+              "select",
+              async (event: XRInputSourceEvent) => {
+                // Place or move the model when user selects
+                const referenceSpace = renderer.xr.getReferenceSpace();
+
+                if (referenceSpace) {
+                  const hitTestSource = await session.requestHitTestSource?.({
+                    space: referenceSpace,
+                  });
+
+                  if (hitTestSource && event.frame) {
+                    // Type-safe hit test
+                    const hitTestResults =
+                      event.frame.getHitTestResults(hitTestSource);
+                    if (hitTestResults.length > 0) {
+                      const pose = hitTestResults[0].getPose(referenceSpace);
+                      if (pose) {
+                        model.position.set(
+                          pose.transform.position.x,
+                          pose.transform.position.y,
+                          pose.transform.position.z
+                        );
+                        scene.add(model);
+                      }
+                    }
+                  }
+                }
+              }
+            );
+          }
+        });
+      },
+      undefined,
+      (error: any) => console.error("Model load error", error)
+    );
+
+    // Render loop
+    renderer.setAnimationLoop(() => {
+      renderer.render(scene, camera);
+    });
+
+    // Cleanup
     return () => {
       renderer.dispose();
-      geometry.dispose();
-      material.dispose();
-      containerRef.current?.removeChild(renderer.domElement);
     };
-  }, [objectColor, objectSize]);
-
-  // Handle object placement
-  const handleSelect = useCallback(() => {
-    if (
-      !isObjectPlaced &&
-      objectRef.current &&
-      controllerRef.current &&
-      sceneRef.current
-    ) {
-      sceneRef.current.add(objectRef.current);
-      objectRef.current.position.setFromMatrixPosition(
-        controllerRef.current.matrixWorld
-      );
-      setIsObjectPlaced(true);
-    }
-  }, [isObjectPlaced]);
-
-  // Start AR session
-  const startARSession = async () => {
-    try {
-      const session = await navigator?.xr?.requestSession("immersive-ar", {
-        requiredFeatures: ["hit-test"],
-        optionalFeatures: ["dom-overlay"],
-        domOverlay: { root: document.body },
-      });
-
-      const renderer = rendererRef.current;
-      if (!renderer || !session) return;
-
-      renderer.xr.enabled = true;
-      renderer.xr.setReferenceSpaceType("local");
-      await renderer.xr.setSession(session);
-
-      // Set up controller
-      const controller = renderer.xr.getController(0);
-      controller.addEventListener("select", handleSelect);
-      sceneRef.current?.add(controller);
-      controllerRef.current = controller;
-
-      setIsARSessionActive(true);
-
-      session?.addEventListener("end", () => {
-        setIsARSessionActive(false);
-        setIsObjectPlaced(false);
-      });
-    } catch (error) {
-      console.error("Error starting AR session:", error);
-      setIsARSessionActive(false);
-    }
-  };
-
-  // Animation loop
-  const startAnimationLoop = useCallback(() => {
-    const renderer = rendererRef.current;
-    if (!renderer) return;
-
-    renderer.setAnimationLoop(() => {
-      if (isObjectPlaced && objectRef.current) {
-        objectRef.current.rotation.x += 0.01;
-        objectRef.current.rotation.y += 0.01;
-      }
-
-      if (sceneRef.current && cameraRef.current) {
-        renderer.render(sceneRef.current, cameraRef.current);
-      }
-    });
-  }, [isObjectPlaced]);
-
-  // Handle window resize
-  const handleResize = useCallback(() => {
-    if (!containerRef.current || !cameraRef.current || !rendererRef.current)
-      return;
-
-    const camera = cameraRef.current;
-    const renderer = rendererRef.current;
-
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
   }, []);
-
-  // Check AR support
-  useEffect(() => {
-    if (!("xr" in navigator)) {
-      setIsARSupported(false);
-      return;
-    }
-
-    navigator?.xr
-      ?.isSessionSupported("immersive-ar")
-      .then((supported) => setIsARSupported(supported))
-      .catch(() => setIsARSupported(false));
-  }, []);
-
-  // Initialize scene and set up event listeners
-  useEffect(() => {
-    const cleanup = initializeScene();
-    startAnimationLoop();
-    window.addEventListener("resize", handleResize);
-
-    return () => {
-      cleanup?.();
-      window.removeEventListener("resize", handleResize);
-      rendererRef.current?.setAnimationLoop(null);
-      rendererRef.current?.xr.getSession()?.end();
-    };
-  }, [initializeScene, startAnimationLoop, handleResize]);
 
   return (
-    <div className="relative w-full h-screen">
-      <div ref={containerRef} className="w-full h-full" />
-
+    <div ref={containerRef} className="w-full h-screen">
       {!isARSupported && (
-        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-red-500 text-white px-4 py-2 rounded">
-          WebXR AR is not supported in your browser
-        </div>
-      )}
-
-      {!isARSessionActive && isARSupported && (
-        <button
-          className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-blue-500 text-white px-6 py-3 rounded-lg text-lg font-semibold shadow-lg hover:bg-blue-600 transition-colors"
-          onClick={startARSession}
-        >
-          Start AR
-        </button>
-      )}
-
-      {isARSessionActive && !isObjectPlaced && (
-        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black bg-opacity-70 text-white px-4 py-2 rounded">
-          Tap in the real world to place the object
+        <div className="absolute top-0 left-0 w-full text-center p-4 bg-red-500 text-white">
+          AR Not Supported on this Device
         </div>
       )}
     </div>
   );
 };
 
-export default ARViewer;
+export default ARShoeApp;
