@@ -16,7 +16,6 @@ declare global {
 }
 
 const ARViewer: React.FC<ARViewerProps> = ({
-  modelPath,
   objectColor = "#00ff00",
   objectSize = 0.1,
 }) => {
@@ -108,7 +107,7 @@ const ARViewer: React.FC<ARViewerProps> = ({
       });
 
       const renderer = rendererRef.current;
-      if (!renderer) return;
+      if (!renderer || !session) return;
 
       renderer.xr.enabled = true;
       renderer.xr.setReferenceSpaceType("local");
@@ -122,7 +121,7 @@ const ARViewer: React.FC<ARViewerProps> = ({
 
       setIsARSessionActive(true);
 
-      session.addEventListener("end", () => {
+      session?.addEventListener("end", () => {
         setIsARSessionActive(false);
         setIsObjectPlaced(false);
       });
